@@ -1,5 +1,10 @@
 import numpy as np
 import scipy
+import time
+
+import count
+import renorm
+
 
 def add(mps_1, mps_2):
     mps = []
@@ -33,6 +38,7 @@ def add(mps_1, mps_2):
         mps[-1][sigma][:, 0] = np.concatenate((site_1[sigma][:, 0], site_2[sigma][:, 0]))
     return mps
 
+
 def add_mpo(mpo_1, mpo_2):
     mpo = []
     site_1 = mpo_1[0]
@@ -45,36 +51,23 @@ def add_mpo(mpo_1, mpo_2):
     mpo.append(np.concatenate((mpo_1[-1][:, :, :, 0], mpo_2[-1][:, :, :, 0]), axis=-1).reshape(d, d, -1, 1))
     return mpo
 
+
 def apply(mps, mpo):
     result = []
+    d = mps[0].shape[0]
+
     for site in range(len(mps)):
         m = mps[site]
         b = mpo[site]
 
         matrix = m[0]
         oper = b[0][0]
-        d = m.shape[0]
-        rows = matrix.shape[0]
-        oper_rows = oper.shape[0]
-        columns = matrix.shape[1]
-        oper_columns = oper.shape[1]
+        result.append(np.einsum('stab,tij->saibj',
+                                b, m).reshape(d, oper.shape[0] * matrix.shape[0],
+                                              oper.shape[1] * matrix.shape[1]))
 
-        n = np.zeros((d, rows * oper_rows, columns * oper_columns))
-
-        for b1 in range(oper_rows):
-            row_shift = b1 * rows
-            for b2 in range(oper_columns):
-                column_shift = b2 * columns
-                for a1 in range(rows):
-                    row = row_shift + a1
-                    for a2 in range(columns):
-                        column = column_shift + a2
-                        for sigma2 in range(d):
-                            mps_element = m[sigma2][a1, a2]
-                            for sigma1 in range(d):
-                                n[sigma1][row, column] += (b[sigma1, sigma2, b1, b2] * mps_element)
-        result.append(n)
     return result
+
 
 def cgd(a, b):
     dim = a.shape[0]
@@ -98,6 +91,7 @@ def cgd(a, b):
 
     return np.array(xs)
 
+
 def compr_in_data(vx_full, vy_full, new_points):
     vx = np.zeros((new_points, new_points))
     vy = np.zeros((new_points, new_points))
@@ -113,6 +107,7 @@ def compr_in_data(vx_full, vy_full, new_points):
 
     return vx, vy
 
+
 def eliminate_singular_matrix(mps):
     if len(mps[0].shape) == 2:
         del mps[0]
@@ -127,6 +122,7 @@ def eliminate_singular_matrix(mps):
         else:
             i += 1
 
+
 def ident(sites, d):
     mpo = []
     bulk = np.zeros((d, d, 1, 1))
@@ -136,6 +132,18 @@ def ident(sites, d):
         mpo.append(bulk)
 
     return mpo
+
+
+def make_runge_step(dim, mv_beta, deriv, bound, deriv_2, viscosity, dt,
+                    sweeps, sites, d, mv_opt, mv_alpha, incompressibility_mult, time_dict):
+    source = count.source_term(dim, mv_beta, deriv, bound, deriv_2, viscosity, dt)
+
+    for sweep_idx in range(sweeps):
+        time_dict = sweep(sites, d, mv_opt, mv_alpha, dim, deriv, dt, incompressibility_mult, time_dict, source)
+        time_dict = sweep_back(sites, d, mv_opt, mv_alpha, dim, deriv, dt, incompressibility_mult, time_dict, source)
+
+    return time_dict
+
 
 def mult(mps1, mps2):
     mps = []
@@ -150,9 +158,10 @@ def mult(mps1, mps2):
 
         mps.append(np.einsum('sij,skl->sikjl',
                              site1, site2).reshape(d, matrix1.shape[0] * matrix2.shape[0],
-                                                            matrix1.shape[1] * matrix2.shape[1]))
+                                                   matrix1.shape[1] * matrix2.shape[1]))
 
     return mps
+
 
 def mult_mpo(mpo1, mpo2):
     result = []
@@ -179,11 +188,64 @@ def mult_mpo(mpo1, mpo2):
                         for sigma1 in range(d):
                             for sigma2 in range(d):
                                 for sigma_sum in range(d):
-                                    n[sigma1, sigma2][a1 * rows2 + a2, b1 * columns2 + b2] +=(
+                                    n[sigma1, sigma2][a1 * rows2 + a2, b1 * columns2 + b2] += (
                                             site1[sigma1, sigma_sum, a1, b1] * site2[sigma_sum, sigma2, a2, b2])
 
         result.append(n)
     return result
+
+
+def sweep(sites, d, mv, mv_alpha, dim, deriv, tau, incompressibility_mult, time_dict, source):
+    for i in range(dim):
+        renorm.right_with_qr(mv[i])
+
+    for node in range(sites):
+        time_dict_new = update_node(d, mv, mv_alpha, dim, deriv, tau, incompressibility_mult, node, source)
+
+        for i in range(dim):
+            site = mv[i][node]
+            q, r = np.linalg.qr(site.reshape(-1, site[0].shape[1]))
+            mv[i][node] = q.reshape(d, -1, q.shape[1])
+            if node < sites - 1:
+                mv[i][node + 1] = r @ mv[i][node + 1]
+            else:
+                mv[i][node] = mv[i][node] @ r
+
+        for op in time_dict_new:
+            if op in time_dict:
+                time_dict_new[op] += time_dict[op]
+
+        time_dict = time_dict_new
+
+    return time_dict
+
+
+def sweep_back(sites, d, mv, mv_alpha, dim, deriv, tau, incompressibility_mult, time_dict, source):
+    for node in reversed(range(sites)):
+        time_dict_new = update_node(d, mv, mv_alpha, dim, deriv, tau, incompressibility_mult, node, source)
+
+        for i in range(dim):
+            r, q = np.linalg.qr(np.conj(np.concatenate([mv[i][node][sigma] for sigma in range(d)], axis=1)).T)
+
+            q = np.conj(q).T
+            r = np.conj(r).T
+
+            step = r.shape[1] // d
+            new_site = np.zeros((d, r.shape[0], step))
+            for sigma in range(d):
+                new_site[sigma] = r[:, step * sigma: step * (sigma + 1)]
+
+            mv[i][node] = new_site
+            mv[i][node - 1] = mv[i][node - 1] @ q
+
+        for op in time_dict_new:
+            if op in time_dict:
+                time_dict_new[op] += time_dict[op]
+
+        time_dict = time_dict_new
+
+    return time_dict
+
 
 def update_guess(i, d, guess, mps, nodes):
     left = np.eye(1)
@@ -200,3 +262,18 @@ def update_guess(i, d, guess, mps, nodes):
             core += mps[site][sigma] @ right @ np.conj(guess[site][sigma]).T
         right = core
     guess[i] = left @ mps[i] @ right
+
+
+def update_node(d, mv, mv_alpha, dim, deriv, tau, incompressibility_mult, node, source):
+    columns = mv[0][node][0].shape[1]
+    rows = mv[0][node][0].shape[0]
+
+    start = time.time()
+    alpha, time_dict = count.new_node(d, rows, columns, mv, mv_alpha, dim,
+                                      deriv, tau, incompressibility_mult, node, source)
+
+    for i in range(dim):
+        mv[i][node][:][:, :] = alpha[:, i, :, :]
+
+    time_dict.update({'total': time.time() - start})
+    return time_dict

@@ -2,6 +2,7 @@ import numpy as np
 
 import utils
 
+
 def left_with_qr(mps):
     d = mps[0].shape[0]
     utils.eliminate_singular_matrix(mps)
@@ -14,6 +15,7 @@ def left_with_qr(mps):
             mps[i + 1] = r @ mps[i + 1]
         else:
             mps[i] = mps[i] @ r
+
 
 def right_with_qr(mps):
     d = mps[0].shape[0]

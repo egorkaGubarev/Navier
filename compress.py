@@ -3,6 +3,7 @@ import numpy as np
 import renorm
 import utils
 
+
 def iteration(mps, guess_left, stop_diff, unitary=True):
     d = mps[0].shape[0]
     nodes = len(mps)
@@ -45,6 +46,7 @@ def iteration(mps, guess_left, stop_diff, unitary=True):
     if unitary:
         guess_left[nodes - 1] /= np.sqrt(sum_trace)
 
+
 def with_svd(mps_left, d_new, unitary=True):
     mps = []
     d = mps_left[0].shape[0]
@@ -67,6 +69,7 @@ def with_svd(mps_left, d_new, unitary=True):
         else:
             mps[-1] = u @ np.diag(s) @ mps[-1]
     return list(reversed(mps))
+
 
 def mpo(mpo_tensors, d_new):
     sites = len(mpo_tensors)

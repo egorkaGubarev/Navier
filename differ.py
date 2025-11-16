@@ -6,9 +6,10 @@ import compress
 import convert
 import count
 import der
+import renorm
 import utils
 
-path = 'C:/Users/gubar/PycharmProjects/Navier'
+path = 'D:/PycharmProjects/Navier'
 
 Q = 256
 K = 2
@@ -50,7 +51,7 @@ for point in range(points):
     cx[point] = vx[int(x), int(y)]
 
 applied = utils.apply(convert.to_left_mps_with_svd(cx, sites, d, bound=bound), der.x(sites, h))
-utils.left_with_qr(applied)
+renorm.left_with_qr(applied)
 guess = compress.with_svd(applied, bound, unitary=False)
 cx_check = convert.from_mps(guess)
 vx_check = np.zeros((Q, Q))
